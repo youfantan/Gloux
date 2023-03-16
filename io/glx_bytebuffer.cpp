@@ -1,82 +1,176 @@
+#include <iostream>
 #include "gloux/io.h"
 
 namespace gloux::io {
-    ByteBuffer::ByteBuffer(uint64_t size) : position(0), capacity(size), positive_order(true), little_endian(true){
-        this->ptr = new char[size];
-        bzero(ptr, size);
+    ByteBuffer::ByteBuffer() : capacity_(single_expand_size), position_(0), positive_order_(true), little_endian_(true), self_allocated_(true) {
+        ptr_ = new char [single_expand_size];
+        memset(ptr_, 0, single_expand_size);
     }
 
-    ByteBuffer::ByteBuffer(char *ptr, uint64_t length) : position(0), capacity(length), positive_order(true), little_endian(true){
-        this->ptr = new char[length];
-        memcpy(this->ptr, ptr, length);
+    ByteBuffer::ByteBuffer(uint64_t capacity) : capacity_(capacity), position_(0), positive_order_(true), little_endian_(true), self_allocated_(true) {
+        ptr_ = new char [capacity];
+        memset(ptr_, 0, capacity);
+    }
+
+    ByteBuffer::ByteBuffer(char *ptr, uint64_t size, bool copy) : capacity_(size), position_(0), positive_order_(true), little_endian_(true), self_allocated_(true) {
+        if (copy) {
+            ptr_ = new char [size];
+            memcpy(ptr_, ptr, size);
+        } else {
+            ptr_ = ptr;
+        }
+    }
+
+    ByteBuffer::ByteBuffer(const ByteBuffer &buffer) {
+        ptr_ = new char [buffer.capacity_];
+        memcpy(ptr_, buffer.ptr_, buffer.capacity_);
+        capacity_ = buffer.capacity_;
+        position_ = buffer.position_;
+        positive_order_ = buffer.positive_order_;
+        little_endian_ = buffer.little_endian_;
+        self_allocated_ = true;
     }
 
     ByteBuffer::~ByteBuffer() {
-        free(ptr);
-    }
-
-    void ByteBuffer::resize(uint64_t length) {
-        char *new_ptr = new char[length];
-        memcpy(new_ptr, ptr, capacity);
-        free(ptr);
-        this->ptr = new_ptr;
-        this->capacity = length;
-    }
-
-    void ByteBuffer::auto_resize() {
-        resize(capacity + DEFAULT_AUTO_RESIZE_LENGTH);
-    }
-
-    std::unique_ptr<char *> ByteBuffer::read_copy(uint64_t offset, uint64_t length) {
-        std::unique_ptr<char*> ret_ptr = std::make_unique<char*>(new char[length]);
-        char *data_ptr = ptr + offset;
-        memcpy(ret_ptr.get(), data_ptr, length);
-        return ret_ptr;
-    }
-
-    std::unique_ptr<char*> ByteBuffer::get(uint64_t length) {
-        std::unique_ptr<char*> ret_ptr = std::make_unique<char*>(new char[length]);
-        char *data_ptr = nullptr;
-        if (positive_order) {
-            data_ptr = ptr + position;
-            position += length;
-        } else {
-            data_ptr = ptr + position - length;
-            position -= length;
+        std::cout << "DEBUG: ByteBuffer destructed" << std::endl;
+        if (self_allocated_) {
+            delete[] ptr_;
         }
-        memcpy(ret_ptr.get(), data_ptr, length);
-        return ret_ptr;
     }
 
-    void ByteBuffer::write(uint64_t offset, void *ptr, uint64_t length) {
-        if (position + length >= capacity) {
-            auto_resize();
+    ByteBuffer ByteBuffer::read(const uint64_t begin, const uint64_t end) const {
+        {
+            std::unique_ptr<std::mutex> lock;
+            return {ptr_ + begin, end - begin};
         }
-        char *data_ptr = reinterpret_cast<char*>(ptr) + offset;
-        memcpy(data_ptr, ptr, length);
     }
 
-    void ByteBuffer::append(void *ptr, uint64_t length) {
-        if (position + length >= capacity) {
-            auto_resize();
+    void ByteBuffer::write(const uint64_t begin, const ByteBuffer &&buffer) {
+        {
+            std::unique_ptr<std::mutex> lock;
+            if (begin + buffer.capacity_ > capacity_) {
+                expand((begin + buffer.capacity_) - capacity_);
+            }
+            memcpy(ptr_ + begin, buffer.ptr_, buffer.capacity_);
         }
-        char *data_ptr = nullptr;
-        if (positive_order) {
-            data_ptr = this->ptr + position;
-            position += length;
-        } else {
-            data_ptr = this->ptr + position - length;
-            position -= length;
+    }
+
+    ByteBuffer ByteBuffer::read(const uint64_t size) {
+        {
+            std::unique_ptr<std::mutex> lock;
+            if (positive_order_) {
+                auto buffer = ByteBuffer(ptr_ + position_, size);
+                position_ += size;
+                return buffer;
+            } else {
+                position_ -= size;
+                return {ptr_ + position_, size};
+            }
         }
-        memcpy(data_ptr, ptr, length);
     }
 
-    void ByteBuffer::set_read_order(bool positive) {
-        this->positive_order = positive;
+    void ByteBuffer::write(const ByteBuffer &&buffer) {
+        {
+            std::unique_ptr<std::mutex> lock;
+            write(position_, std::forward<const ByteBuffer>(buffer));
+            position_ += buffer.capacity_;
+        }
     }
 
-    void ByteBuffer::set_byteorder(bool little) {
-        this->little_endian = little;
+    uint64_t ByteBuffer::capacity() const {
+        return capacity_;
+    }
+
+    void ByteBuffer::capacity(const uint64_t value) {
+        capacity_ = value;
+    }
+
+    uint64_t ByteBuffer::position() const {
+        return position_;
+    }
+
+    void ByteBuffer::position(const uint64_t value) {
+        position_ = value;
+    }
+
+    bool ByteBuffer::positive_order() const {
+        return positive_order_;
+    }
+
+    void ByteBuffer::positive_order(const bool value) {
+        positive_order_ = value;
+    }
+
+    bool ByteBuffer::little_endian() const {
+        return little_endian_;
+    }
+
+    void ByteBuffer::little_endian(const bool value) {
+        little_endian_ = value;
+    }
+
+    bool ByteBuffer::self_allocated() const {
+        return self_allocated_;
+    }
+
+    void ByteBuffer::expand(const uint64_t size) {
+        char *ptr = new char [capacity_ + size];
+        memcpy(ptr, ptr_, capacity_);
+        delete[] ptr_;
+        ptr_ = ptr;
+        capacity_ = capacity_ + size;
+    }
+
+    void ByteBuffer::expand() {
+        expand(single_expand_size);
+    }
+
+    char& ByteBuffer::operator[](uint64_t position) {
+        return ptr_[position];
+    }
+
+    ByteBuffer::operator int() {
+        return *(reinterpret_cast<int *>(ptr_));
+    }
+
+    ByteBuffer::operator long() {
+        return *(reinterpret_cast<long *>(ptr_));
+    }
+
+    ByteBuffer::operator short() {
+        return *(reinterpret_cast<short *>(ptr_));
+    }
+
+    ByteBuffer::operator long long() {
+        return *(reinterpret_cast<long long *>(ptr_));
+    }
+
+    ByteBuffer::operator unsigned int() {
+        return *(reinterpret_cast<unsigned int *>(ptr_));
+    }
+
+    ByteBuffer::operator unsigned long() {
+        return *(reinterpret_cast<unsigned long *>(ptr_));
+    }
+
+    ByteBuffer::operator unsigned short() {
+        return *(reinterpret_cast<unsigned short *>(ptr_));
+    }
+
+    ByteBuffer::operator unsigned long long() {
+        return *(reinterpret_cast<unsigned long long *>(ptr_));
+    }
+
+    ByteBuffer::operator float() {
+        return *(reinterpret_cast<float *>(ptr_));
+    }
+
+    ByteBuffer::operator double() {
+        return *(reinterpret_cast<double *>(ptr_));
+    }
+
+    ByteBuffer::operator std::string() {
+        return {ptr_, capacity_};
     }
 
 }
